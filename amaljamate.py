@@ -1,6 +1,6 @@
 #!/usr/bin/python
 from __future__ import with_statement
-import datetime, grp, hashlib, httplib, operator, os, re, sys, tempfile, threading, time, urllib2, xml.dom.minidom, yaml
+import datetime, grp, hashlib, httplib, operator, os, re, sys, tempfile, threading, time, urllib2, xml.dom.minidom, xml.parsers.expat, yaml
 
 # amaljamate - Simple multiplexer to get around the lack of RSS for LJ's friends page
 #
@@ -48,7 +48,7 @@ INITIAL_DELAY = 6
 MAX_DELAY = 100
 MAX_TRIES = 10
 CACHE_TIME = 3500
-USER_AGENT = 'amaljamate/0.1; chris@boyle.name; http://chris.boyle.name/projects/amaljamate'
+USER_AGENT = 'amaljamate/0.2; chris@boyle.name; http://chris.boyle.name/projects/amaljamate'
 VERBOSE = '--verbose' in sys.argv
 
 def log(m):
@@ -96,20 +96,20 @@ class DiskCacheFetcher:
 		self.delay = INITIAL_DELAY
 
 	def fetch(self, url, max_age=0, headers={}, username=None, password=None):
+		lastEx = None
 		for tryNum in range(0, MAX_TRIES):
 			log('Try %d/%d: %s' % (tryNum, MAX_TRIES, url))
 			try:
 				return self._fetch(url, max_age, headers, username, password)
-			except (httplib.HTTPException, urllib2.HTTPError, urllib2.URLError, httplib.BadStatusLine), e:
+			#except (httplib.HTTPException, urllib2.HTTPError, urllib2.URLError, httplib.BadStatusLine), e:
+			except Exception, e:  # e.g. ECONNRESET is a plain old Exception
 				log(e)
+				lastEx = e
 			# Sleep a bit longer and have another try
 			self.delay = min(self.delay*DELAY_SCALE, MAX_DELAY)
-		sys.stderr.write('Tried to fetch %s' % url)
-		try:
-			raise
-		except Exception, e:
-			sys.stderr.write(str(e))
-			if hasattr(e,'read'): sys.stderr.write(str(e.read()))
+		sys.stderr.write("Tried to fetch %s\n" % url)
+		sys.stderr.write(str(lastEx))
+		if hasattr(lastEx,'read'): sys.stderr.write(str(lastEx.read()))
 		return ''
 
 	def _fetch(self, url, max_age=0, headers={}, username=None, password=None):
@@ -191,9 +191,18 @@ class FeedMaker( threading.Thread ):
 		entries = []
 		url = re.sub(r'rss$','atom',friend) + '?auth=digest'
 		friend = self.url_to_friend(friend)
-		data = self.fetcher.fetch( url, CACHE_TIME, username=self.username, password=self.password )
+		try:
+			data = self.fetcher.fetch( url, CACHE_TIME, username=self.username, password=self.password )
+		except:
+			sys.stderr.write("Unknown exception while parsing %s\n" % url)
+			return []
 		if len(data) <= 0: return []
-		dom = xml.dom.minidom.parseString( data )
+		try:
+			dom = xml.dom.minidom.parseString( data )
+		except xml.parsers.expat.ExpatError, e:
+			sys.stderr.write("Parse error in %s\n" % url)
+			sys.stderr.write(str(e)+"\n")
+			return []
 		for e in dom.getElementsByTagName('entry'):
 			self._retitle(e, friend)
 			entries.append((self._entry_date(e), e.toxml('UTF-8')))
